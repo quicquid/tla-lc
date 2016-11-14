@@ -1,6 +1,6 @@
 open Format
 
-type tp = Ti | To | Arr of tp * tp
+type tp = Tt | Ti | To | Arr of tp * tp
 
 let pp_wrap condition pp_fmt fmt x=
   if condition then
@@ -11,6 +11,7 @@ let pp_wrap condition pp_fmt fmt x=
 let rec pp_type ?inside:(ins=false) fmt = function
   | Ti -> fprintf fmt "i"
   | To -> fprintf fmt "o"
+  | Tt -> fprintf fmt "t"
   | Arr(t1, t2) ->
     fprintf fmt "%a>%a" (pp_wrap ins pp_type) t1 (pp_wrap ins pp_type) t2
 
@@ -264,6 +265,107 @@ module T = struct
   let cycle1 = cycle 1
   let cycle2 = cycle 2
   let cycle3 = cycle 3
+end
+
+(* TLA encodings *)
+
+module TLA = struct
+  let t_next = Tt --> Tt
+  let t_rho = t_next --> (Tt --> Ti)
+
+  let is_trho = function
+    | Arr (Arr (Tt, Tt), Arr ( Tt, Ti)) -> true
+    | _ -> false
+
+  let cid name arity =
+    let rec tp acc = function
+      | 0 -> acc
+      | n when n > 0 ->
+        tp (Ti --> acc) (n-1)
+      | _ -> failwith "Arity must >= 0."
+    in
+    (ID.make name (tp Ti arity))
+
+
+  let op_arity =
+    let rec cid_arity_ n = function
+      | t when is_trho t -> n
+      | Arr (t, x) when is_trho t -> cid_arity_ (1+n) x
+      | _ -> failwith "This is not a constant!"
+    in cid_arity_ 0
+
+  let c_arity =
+    let rec cid_arity_ n = function
+      | Ti -> n
+      | Arr (Ti, x) -> cid_arity_ (1+n) x
+      | _ -> failwith "This is not a constant!"
+    in cid_arity_ 0
+
+
+  let rec is_const_t = function
+    | Ti -> true
+    | Arr (Ti, x) -> is_const_t x
+    | _ -> false
+
+  let vid name = (ID.make name t_next)
+
+  let c_op = function
+    | c when ID.ty c |> is_const_t ->
+      let rec mk_arg_ids acc = function
+      | 0 ->
+        acc
+      | n when n > 0 ->
+        let id = ID.make (Format.asprintf "arg%d" n) t_rho  in
+        mk_arg_ids (id::acc) (n-1)
+      | _  ->  failwith "A constant operator is of type (Tt-->Tt)^n-->(Tt-->Tt)."
+      in
+      (* create ids and vars for time *)
+      let nid = (ID.make "n" (Tt --> Tt) ) in
+      let tid = (ID.make "t" Tt) in
+      let next = var nid in
+      let time = var tid in
+      (* create ids *)
+      let arg_ids = mk_arg_ids [] (c_arity (ID.ty c)) in
+      (* propagate next and time to the arguments *)
+      let acc_ops =
+        List.map (fun id -> (app (app (var id) next) time)) arg_ids in
+      (* create inner term *)
+      let s = app_l (var c) acc_ops in
+      let inner = abs nid (abs tid s) in
+      (* abstract over id for each argument *)
+      let r = List.rev arg_ids |> List.fold_left
+                (fun exp id -> abs id exp) inner
+      in r
+
+  let v_op id =
+    match ID.ty id with
+    | Arr (Tt, Tt) ->
+      let nid = (ID.make "n" (Tt --> Tt) ) in
+      let s = var id in
+      abs nid s
+    | _  ->  failwith "A variable operator is of type Tt-->Tt."
+
+
+  let apply op args =
+    match (op_arity op.ty, List.length args) with
+    | (n, m) when n = m ->
+      app_l op args
+    | _ -> failwith "Tried to apply operator of wrong arity!"
+
+
+end
+
+
+module TT = struct
+  let plus_id = TLA.cid "!+!" 2
+  let zero_id = TLA.cid "!0!" 0
+  let one_id = TLA.cid "!1!" 0
+
+  let zero = TLA.c_op zero_id
+  let one = TLA.c_op one_id
+  let plus = TLA.c_op plus_id
+
+  let exp1 = TLA.apply plus [one; one] |> reduce
 end
 
 let () =
