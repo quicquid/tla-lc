@@ -13,7 +13,9 @@ let rec pp_type ?inside:(ins=false) fmt = function
   | To -> fprintf fmt "o"
   | Tt -> fprintf fmt "t"
   | Arr(t1, t2) ->
-    fprintf fmt "%a>%a" (pp_wrap ins pp_type) t1 (pp_wrap ins pp_type) t2
+    match ins with
+    | false  -> fprintf fmt "%a>%a" (pp_type ~inside:true) t1 (pp_type ~inside:true) t2
+    | true -> fprintf fmt "(%a>%a)" (pp_type ~inside:true) t1 (pp_type ~inside:true) t2
 
 
 module ID : sig
@@ -207,11 +209,34 @@ let pp_term fmt term =
       fprintf fmt "%a"
         (pp_wrap inside (pp_term_ true)) t
     | Abs (id,t) ->
-      fprintf fmt "\\%a %a" ID.pp id
+      fprintf fmt "λ%a %a" ID.pp id
         (pp_wrap inside (pp_term_ true)) t
     | Mu (id,t) ->
       fprintf fmt "@<1>µ%a %a" ID.pp id
         (pp_wrap inside (pp_term_ true)) t
+  in
+  pp_term_ false fmt term
+
+let pp_ntterm fmt term =
+  let rec pp_term_ inside fmt t = match t.expr with
+    | Const id
+    | Var id ->
+      fprintf fmt "%s" (ID.name id)
+    | App (s,t) when inside ->
+      fprintf fmt "(%a " (pp_term_ true) s;
+      fprintf fmt "%a)" (pp_term_ true) t;
+    | App (s,t) (* not inside *) ->
+      fprintf fmt "%a " (pp_term_ true) s;
+      fprintf fmt "%a" (pp_term_ true) t;
+    | Abs (id,t) when inside ->
+      fprintf fmt "(λ%a %a)" ID.pp id
+        (pp_term_ true) t
+    | Abs (id,t) (* not inside *) ->
+      fprintf fmt "λ%a %a" ID.pp id
+        (pp_term_ true) t
+    | Mu (id,t) ->
+      fprintf fmt "@<1>µ%a %a" ID.pp id
+        (pp_term_ true) t
   in
   pp_term_ false fmt term
 
@@ -272,6 +297,7 @@ end
 module TLA = struct
   let t_next = Tt --> Tt
   let t_rho = t_next --> (Tt --> Ti)
+  let c_enabled = const (ID.make "EN" ((Tt --> Ti) --> Ti))
 
   let is_trho = function
     | Arr (Arr (Tt, Tt), Arr ( Tt, Ti)) -> true
@@ -287,19 +313,24 @@ module TLA = struct
     (ID.make name (tp Ti arity))
 
 
-  let op_arity =
+  let op_arity expr =
     let rec cid_arity_ n = function
       | t when is_trho t -> n
       | Arr (t, x) when is_trho t -> cid_arity_ (1+n) x
-      | _ -> failwith "This is not a constant!"
-    in cid_arity_ 0
+      | _ ->
+        let msg = asprintf "%a is not an operator!" pp_term expr in
+        failwith msg
+    in cid_arity_ 0 expr.ty
 
-  let c_arity =
+  let c_arity ty =
     let rec cid_arity_ n = function
       | Ti -> n
       | Arr (Ti, x) -> cid_arity_ (1+n) x
-      | _ -> failwith "This is not a constant!"
-    in cid_arity_ 0
+      | _ ->
+        let msg = asprintf "%a is not a constant type!"
+            (pp_type ~inside:false) ty in
+        failwith msg
+    in cid_arity_ 0 ty
 
 
   let rec is_const_t = function
@@ -307,7 +338,7 @@ module TLA = struct
     | Arr (Ti, x) -> is_const_t x
     | _ -> false
 
-  let vid name = (ID.make name t_next)
+  let vid name = (ID.make name (Tt --> Ti))
 
   let c_op = function
     | c when ID.ty c |> is_const_t ->
@@ -317,7 +348,7 @@ module TLA = struct
       | n when n > 0 ->
         let id = ID.make (Format.asprintf "arg%d" n) t_rho  in
         mk_arg_ids (id::acc) (n-1)
-      | _  ->  failwith "A constant operator is of type (Tt-->Tt)^n-->(Tt-->Tt)."
+      | _  ->  failwith "A constant operator is of type Tnext^n --> Tnext."
       in
       (* create ids and vars for time *)
       let nid = (ID.make "n" (Tt --> Tt) ) in
@@ -336,36 +367,78 @@ module TLA = struct
       let r = List.rev arg_ids |> List.fold_left
                 (fun exp id -> abs id exp) inner
       in r
+    | _ -> failwith "A constant operator is of type Tnext^n --> Tnext."
 
   let v_op id =
     match ID.ty id with
-    | Arr (Tt, Tt) ->
-      let nid = (ID.make "n" (Tt --> Tt) ) in
+    | Arr (Tt, Ti) ->
+      let nid = (ID.make "n" t_next ) in
       let s = var id in
       abs nid s
-    | _  ->  failwith "A variable operator is of type Tt-->Tt."
+    | _  ->  failwith "A variable operator is of type Tt-->Ti."
 
 
   let apply op args =
-    match (op_arity op.ty, List.length args) with
+    match (op_arity op, List.length args) with
     | (n, m) when n = m ->
       app_l op args
     | _ -> failwith "Tried to apply operator of wrong arity!"
 
+  let prime expr =
+    match op_arity expr with
+    | 0 ->
+      (* prepare outer binders for enabled *)
+      let nid = (ID.make "n" (Tt --> Tt) ) in
+      let tid = (ID.make "t" Tt) in
+      let next = var nid in
+      let t = var tid in
+      (* create t' as next of t *)
+      let t_prime = app next t in
+      (* abstract over next and time and push the modified time inside *)
+      abs_l [nid; tid] (app_l expr [next; t_prime])
+    | _ -> failwith "Can apply enabled only to expressions."
 
+  let enabled expr =
+    match op_arity expr with
+    | 0 ->
+      (* create id and var for the new state *)
+      let en_id = ID.make "$en" Tt in
+      let v = var en_id in
+      (* create a new next state relation projecting to v *)
+      let next = abs (ID.make "dummy" Tt) v in
+      (* prepare outer binders for enabled *)
+      let nid = (ID.make "n" (Tt --> Tt) ) in
+      let tid = (ID.make "t" Tt) in
+      let t = var tid in
+      (* evaluate expr with the new next and current time. *)
+      let enabled_term = app_l expr [next; t] in
+      (* bind the new state en_id and wrap the term into the enabled constant *)
+      let enabled = app c_enabled (abs en_id enabled_term) in
+      (* abstract over next and t *)
+      let term = abs_l [nid; tid] enabled in
+      term
+    | _ -> failwith "Can apply enabled only to expressions."
 end
 
 
 module TT = struct
-  let plus_id = TLA.cid "!+!" 2
-  let zero_id = TLA.cid "!0!" 0
-  let one_id = TLA.cid "!1!" 0
+  let dif_id  = TLA.cid "[#]" 2
+  let plus_id = TLA.cid "[+]" 2
+  let zero_id = TLA.cid "[0]" 0
+  let one_id  = TLA.cid "[1]" 0
 
   let zero = TLA.c_op zero_id
-  let one = TLA.c_op one_id
+  let one  = TLA.c_op one_id
   let plus = TLA.c_op plus_id
+  let dif  = TLA.c_op dif_id
+
+  let xid = TLA.vid "x"
+  let x = TLA.v_op xid
 
   let exp1 = TLA.apply plus [one; one] |> reduce
+  let x_prime = TLA.prime x
+  let exp2 = TLA.apply dif [x; x_prime]
+  let exp3 = TLA.enabled exp2
 end
 
 let () =
