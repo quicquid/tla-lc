@@ -13,10 +13,12 @@ let rec pp_type ?inside:(ins=false) fmt = function
   | To -> fprintf fmt "o"
   | Tt -> fprintf fmt "t"
   | Arr(t1, t2) ->
+    let pp_ty = pp_type ~inside:true in
     match ins with
-    | false  -> fprintf fmt "%a>%a" (pp_type ~inside:true) t1 (pp_type ~inside:true) t2
-    | true -> fprintf fmt "(%a>%a)" (pp_type ~inside:true) t1 (pp_type ~inside:true) t2
+    | false  -> fprintf fmt "%a>%a" pp_ty t1 pp_ty t2
+    | true -> fprintf fmt "(%a>%a)" pp_ty t1 pp_ty t2
 
+let pp_ty = pp_type ~inside:false
 
 module ID : sig
   type t
@@ -295,9 +297,28 @@ end
 (* TLA encodings *)
 
 module TLA = struct
+  type quantifier = Forall | Exists
+
   let t_next = Tt --> Tt
   let t_rho = t_next --> (Tt --> Ti)
   let c_enabled = const (ID.make "EN" ((Tt --> Ti) --> Ti))
+
+  (* quantifier represenatation: a quantifier takes the domain expression and
+     the abstraction over the expression to return an expression *)
+  let t_cquantifier  = (Ti --> t_rho) --> t_rho
+  let t_vquantifier  = ((Tt --> Ti) --> t_rho) --> t_rho
+  let t_cbquantifier = t_rho --> ((Ti --> t_rho) --> t_rho)
+  let t_vbquantifier = t_rho --> (((Tt --> Ti) --> t_rho) --> t_rho)
+
+  let c_forall_c = const (ID.make "∀"  t_cquantifier )
+  let c_exists_c = const (ID.make "∃"  t_cquantifier )
+  let c_forall_v = const (ID.make "∀∀" t_vquantifier )
+  let c_exists_v = const (ID.make "∃∃" t_vquantifier )
+
+  let c_bforall_c = const (ID.make "B∀"  t_cbquantifier )
+  let c_bexists_c = const (ID.make "B∃"  t_cbquantifier )
+  let c_bforall_v = const (ID.make "B∀∀" t_vbquantifier )
+  let c_bexists_v = const (ID.make "B∃∃" t_vbquantifier )
 
   let is_trho = function
     | Arr (Arr (Tt, Tt), Arr ( Tt, Ti)) -> true
@@ -418,6 +439,34 @@ module TLA = struct
       let term = abs_l [nid; tid] enabled in
       term
     | _ -> failwith "Can apply enabled only to expressions."
+
+
+  let constant_quantifier q x ?domain:(domain=None) expr =
+    let op = match q with
+      | Forall -> c_forall_c
+      | Exists -> c_exists_c
+    in
+    match domain, ID.ty x with
+    | Some d, Ti ->
+      app_l op [d; abs x expr]
+    | None, Ti ->
+      app op (abs x expr)
+    | _, _ ->
+      failwith "Must quantify over a (temporal) constant of type Ti."
+
+  let variable_quantifier q x ?domain:(domain=None) expr =
+    let op = match q with
+      | Forall -> c_forall_v
+      | Exists -> c_exists_v
+    in
+    match domain, ID.ty x with
+    | Some d, Arr (Tt, Ti) ->
+      app_l op [d; abs x expr]
+    | None, Arr (Tt, Ti) ->
+      app op (abs x expr)
+    | _ ->
+      failwith "Must quantify over a (temporal) variable of type Tt -> Ti."
+
 end
 
 
@@ -439,6 +488,8 @@ module TT = struct
   let x_prime = TLA.prime x
   let exp2 = TLA.apply dif [x; x_prime]
   let exp3 = TLA.enabled exp2
+  let exp4 = TLA.variable_quantifier Forall xid exp2
+  let exp5 = TLA.apply dif [exp4; exp4] |> reduce
 end
 
 let () =

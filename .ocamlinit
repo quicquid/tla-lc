@@ -1,0 +1,3 @@
+#use "lambda_calculus.ml"
+#install_printer pp_ntterm ;;
+#install_printer pp_ty ;;
