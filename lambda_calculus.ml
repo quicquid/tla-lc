@@ -51,6 +51,9 @@ end = struct
   let ty id = id.ty
   let pp out {name; ty; id} =
     fprintf out "%s:%a" name (pp_type ~inside:false) ty
+
+  let pp_debug out {name; ty; id} =
+    fprintf out "%s[%d]:%a" name id (pp_type ~inside:false) ty
 end
 
 module IDMap = Map.Make(ID)
@@ -93,6 +96,50 @@ let abs (v:ID.t) e =
 
 let abs_l = List.fold_right abs
 
+
+let pp_term fmt term =
+  let rec pp_term_ inside fmt t = match t.expr with
+    | Const id
+    | Var id -> ID.pp fmt id
+    | App (s,t) ->
+      fprintf fmt "%a "
+        (pp_wrap inside (pp_term_ true)) s;
+      fprintf fmt "%a"
+        (pp_wrap inside (pp_term_ true)) t
+    | Abs (id,t) ->
+      fprintf fmt "λ%a %a" ID.pp id
+        (pp_wrap inside (pp_term_ true)) t
+    | Mu (id,t) ->
+      fprintf fmt "@<1>µ%a %a" ID.pp id
+        (pp_wrap inside (pp_term_ true)) t
+  in
+  pp_term_ false fmt term
+
+let pp_ntterm fmt term =
+  let rec pp_term_ inside fmt t = match t.expr with
+    | Const id
+    | Var id ->
+      fprintf fmt "%s" (ID.name id)
+      (* fprintf fmt "%a" ID.pp id *)
+    | App (s,t) when inside ->
+      fprintf fmt "(%a " (pp_term_ true) s;
+      fprintf fmt "%a)" (pp_term_ true) t;
+    | App (s,t) (* not inside *) ->
+      fprintf fmt "%a " (pp_term_ true) s;
+      fprintf fmt "%a" (pp_term_ true) t;
+    | Abs (id,t) when inside ->
+      fprintf fmt "(λ%a %a)" ID.pp id
+        (pp_term_ true) t
+    | Abs (id,t) (* not inside *) ->
+      fprintf fmt "λ%a %a" ID.pp id
+        (pp_term_ true) t
+    | Mu (id,t) ->
+      fprintf fmt "@<1>µ%a %a" ID.pp id
+        (pp_term_ true) t
+  in
+  pp_term_ false fmt term
+
+
 let rec subst (s:subst) (t:expr): expr = match t.expr with
   | Const _ -> t
   | Var id ->
@@ -114,14 +161,19 @@ let rec subst (s:subst) (t:expr): expr = match t.expr with
 type eval_mode =
   | SNF
   | WHNF
+let pp_eval_mode fmt = function
+  | SNF -> fprintf fmt "SNF"
+  | WHNF -> fprintf fmt "WHNF"
 
 (* Strong Normal Form *)
-let reduce t =
-  let rec aux mode s t = match t.expr with
+let dreduce debug t =
+  let rec aux mode s t =
+    if debug then printf "@<1>reduce: %a -- %a@," pp_term t pp_eval_mode mode else ();
+    match t.expr with
     | Const _ -> t
     | Var _ -> subst s t
-    | App (f, arg) ->
-      let f = aux WHNF s f in
+    | App (f', arg) ->
+      let f = aux WHNF s f' in
       begin match f.expr, mode with
         | Abs (v, body), _ ->
           let arg = aux mode s arg in
@@ -130,8 +182,9 @@ let reduce t =
           let arg = subst s arg in
           app f arg
         | _, SNF ->
-          let arg = aux mode s arg in
-          app f arg
+          let arg = aux SNF s arg in
+          let g = aux SNF s f in
+          app g arg
       end
     | Abs (id, e) ->
       begin match mode with
@@ -151,6 +204,8 @@ let reduce t =
       end
   in
   aux SNF IDMap.empty t
+
+let reduce = dreduce false
 
 module IDPairSet = Set.Make(struct
     type t = ID.t * ID.t
@@ -201,46 +256,6 @@ let pp_cond conditon pp_fmt fmt x =
   else
     ()
 
-let pp_term fmt term =
-  let rec pp_term_ inside fmt t = match t.expr with
-    | Const id
-    | Var id -> ID.pp fmt id
-    | App (s,t) ->
-      fprintf fmt "%a "
-        (pp_wrap inside (pp_term_ true)) s;
-      fprintf fmt "%a"
-        (pp_wrap inside (pp_term_ true)) t
-    | Abs (id,t) ->
-      fprintf fmt "λ%a %a" ID.pp id
-        (pp_wrap inside (pp_term_ true)) t
-    | Mu (id,t) ->
-      fprintf fmt "@<1>µ%a %a" ID.pp id
-        (pp_wrap inside (pp_term_ true)) t
-  in
-  pp_term_ false fmt term
-
-let pp_ntterm fmt term =
-  let rec pp_term_ inside fmt t = match t.expr with
-    | Const id
-    | Var id ->
-      fprintf fmt "%s" (ID.name id)
-    | App (s,t) when inside ->
-      fprintf fmt "(%a " (pp_term_ true) s;
-      fprintf fmt "%a)" (pp_term_ true) t;
-    | App (s,t) (* not inside *) ->
-      fprintf fmt "%a " (pp_term_ true) s;
-      fprintf fmt "%a" (pp_term_ true) t;
-    | Abs (id,t) when inside ->
-      fprintf fmt "(λ%a %a)" ID.pp id
-        (pp_term_ true) t
-    | Abs (id,t) (* not inside *) ->
-      fprintf fmt "λ%a %a" ID.pp id
-        (pp_term_ true) t
-    | Mu (id,t) ->
-      fprintf fmt "@<1>µ%a %a" ID.pp id
-        (pp_term_ true) t
-  in
-  pp_term_ false fmt term
 
 (* test terms *)
 module T = struct
@@ -397,8 +412,10 @@ module TLA = struct
       let s = var id in
       abs nid s
     | _  ->  failwith "A variable operator is of type Tt-->Ti."
-
-
+(*
+  let fp_op id =
+    try ID.ty id with
+*)
   let apply op args =
     match (op_arity op, List.length args) with
     | (n, m) when n = m ->
@@ -488,7 +505,7 @@ module TT = struct
   let x_prime = TLA.prime x
   let exp2 = TLA.apply dif [x; x_prime]
   let exp3 = TLA.enabled exp2
-  let exp4 = TLA.variable_quantifier Forall xid exp2
+  let exp4 = TLA.variable_quantifier TLA.Forall xid exp2
   let exp5 = TLA.apply dif [exp4; exp4] |> reduce
 end
 
