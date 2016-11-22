@@ -57,6 +57,7 @@ end = struct
 end
 
 module IDMap = Map.Make(ID)
+module IDSet = Set.Make(ID)
 
 type expr = {
   expr: expr_cell;
@@ -96,6 +97,14 @@ let abs (v:ID.t) e =
 
 let abs_l = List.fold_right abs
 
+let is_abs = function
+  | Abs (_,_) -> true
+  | _ -> false
+
+let is_app = function
+  | App (_,_) -> true
+  | _ -> false
+
 
 let pp_term fmt term =
   let rec pp_term_ inside fmt t = match t.expr with
@@ -120,21 +129,66 @@ let pp_ntterm fmt term =
     | Const id
     | Var id ->
       fprintf fmt "%s" (ID.name id)
-      (* fprintf fmt "%a" ID.pp id *)
+    (* fprintf fmt "%a" ID.pp id *)
     | App (s,t) when inside ->
-      fprintf fmt "(%a " (pp_term_ true) s;
+      let parens = not (is_app s.expr) in
+      fprintf fmt "(%a " (pp_term_ parens) s;
       fprintf fmt "%a)" (pp_term_ true) t;
     | App (s,t) (* not inside *) ->
-      fprintf fmt "%a " (pp_term_ true) s;
+      let parens = not (is_app s.expr) in
+      fprintf fmt "%a " (pp_term_ parens) s;
       fprintf fmt "%a" (pp_term_ true) t;
     | Abs (id,t) when inside ->
+      let parens = not (is_abs t.expr) in
       fprintf fmt "(λ%a %a)" ID.pp id
-        (pp_term_ true) t
+        (pp_term_ parens) t
     | Abs (id,t) (* not inside *) ->
+      let parens = not (is_abs t.expr) in
       fprintf fmt "λ%a %a" ID.pp id
-        (pp_term_ true) t
+        (pp_term_ parens) t
     | Mu (id,t) ->
       fprintf fmt "@<1>µ%a %a" ID.pp id
+        (pp_term_ true) t
+  in
+  pp_term_ false fmt term
+
+
+let pp_textype fmt =
+  let rec pp_textype ?inside:(ins=false) fmt = function
+    | Ti -> fprintf fmt "\\iota"
+    | To -> fprintf fmt "o"
+    | Tt -> fprintf fmt "\\tau"
+    | Arr(t1, t2) ->
+      let pp_ty = pp_type ~inside:true in
+      match ins with
+      | false  -> fprintf fmt "%a \\tya %a" pp_ty t1 pp_ty t2
+      | true -> fprintf fmt "(%a \tya %a)" pp_ty t1 pp_ty t2
+  in
+  pp_textype fmt
+
+let pp_texterm fmt term =
+  let rec pp_term_ inside fmt t = match t.expr with
+    | Const id
+    | Var id ->
+      fprintf fmt "%s" (ID.name id)
+    | App (s,t) when inside ->
+      let parens = not (is_app s.expr) in
+      fprintf fmt "(%a\\;  " (pp_term_ parens) s;
+      fprintf fmt "%a)" (pp_term_ true) t;
+    | App (s,t) (* not inside *) ->
+      let parens = not (is_app s.expr) in
+      fprintf fmt "%a\\; " (pp_term_ parens) s;
+      fprintf fmt "%a" (pp_term_ true) t;
+    | Abs (id,t) when inside ->
+      let parens = not (is_abs t.expr) in
+      fprintf fmt "(\\lambda %s_{%a}\\; %a)" (ID.name id) pp_textype (ID.ty id)
+        (pp_term_ parens) t
+    | Abs (id,t) (* not inside *) ->
+      let parens = not (is_abs t.expr) in
+      fprintf fmt "\\lambda %s_{%a}\\; %a" (ID.name id) pp_textype (ID.ty id)
+        (pp_term_ parens) t
+    | Mu (id,t) ->
+      fprintf fmt "@<1>\\mu %a %a" ID.pp id
         (pp_term_ true) t
   in
   pp_term_ false fmt term
@@ -249,6 +303,85 @@ let alpha_eq (a:expr)(b:expr): bool =
       | Abs _, _ -> false
   in
   aux IDPairSet.empty IDMap.empty a b
+
+
+let free =
+  let rec aux binders acc e = match e.expr with
+    | Const _ -> acc
+    | Var id ->
+      begin
+        match List.mem id binders with
+        | true -> acc
+        | false when List.mem id acc -> acc
+        | false -> id::acc
+      end
+    | Abs (id,t) -> aux (id::binders) acc t
+    | Mu (id,t) -> aux (id::binders) acc t
+    | App (s,t) ->
+      let acc1 = aux binders acc s in
+      let acc2 = aux binders acc1 t in
+      acc2
+  in
+  aux [] []
+    
+
+let unique_bound expr =
+  let rec rename blacklist id others count =
+    let name' = asprintf "%s%d" (ID.name id) count in
+    match (List.mem name' blacklist, List.mem name' others)  with
+    | (false, false) ->
+      name'
+    | _ ->
+      rename blacklist id others (count + 1)
+  in
+  let expr_rename id others =
+    let name = rename (List.map ID.name (free expr)) id others 1 in
+    ID.make name (ID.ty id)
+  in
+  let modfied_subterm id map aux t =
+      let map_ids = IDMap.fold (fun k n l -> k::n::l) map [] in
+      let conflicting_ids = List.filter (fun k -> ID.name k = ID.name id) map_ids in
+      match conflicting_ids with
+      | [] ->
+        let map1 = IDMap.add id id map in
+        let t',map2 = aux map1 t in
+        (t',map2,id)
+      | _::_ ->
+        let names = List.map ID.name map_ids in
+        let nid = expr_rename id names in
+        (* printf "rename %a to %a!@." ID.pp id ID.pp nid; *)
+        let map1 = IDMap.add id nid map in
+        let t',map2 = aux map1 t in
+        (t',map2,nid)
+  in
+  let rec aux map e = match e.expr with
+    | Const id ->
+      begin
+        try
+          (const (IDMap.find id map), map)
+        with
+        | Not_found -> (e, map)
+      end
+    | Var id ->
+      begin
+        try
+          (var (IDMap.find id map), map)
+        with
+        | Not_found -> (e, map)
+      end
+    | App (s, t) ->
+      let (s',m1) = aux map s in
+      let (t',m2) = aux m1 t in
+      (app s' t', m2)
+    | Abs (id, t) ->
+      let (t', map2,nid) = modfied_subterm id map aux t in
+      (abs nid t', map2)
+    | Mu (id, t) ->
+      let (t', map2,nid) = modfied_subterm id map aux t in
+      (mu nid t', map2)
+  in
+  aux IDMap.empty expr |> fst
+
 
 let pp_cond conditon pp_fmt fmt x =
   if conditon then
@@ -440,7 +573,7 @@ module TLA = struct
     match op_arity expr with
     | 0 ->
       (* create id and var for the new state *)
-      let en_id = ID.make "$en" Tt in
+      let en_id = ID.make "e" Tt in
       let v = var en_id in
       (* create a new next state relation projecting to v *)
       let next = abs (ID.make "dummy" Tt) v in
