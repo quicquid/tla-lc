@@ -1,27 +1,27 @@
 This is an encoding of TLA into lambda calculus. We have types
- Tt for states, Ti for values (i.e. sets) and To for booleans.
- A TLA expression is of type (Tt > Tt) > Tt > Ti : it is a function
- which takes a next-state function and the current state t and returns
- the the value of the expression at t. In the following, we will use t_rho
- for the type of an expression and t_next for the type of the next state
- function.
+ Tt for states, Ts for streams of states, Ti for values (i.e. sets) and To for
+ booleans. A TLA expression is of type Ts > Tt > Ti : it is a function
+ which takes the stream of followup states and the current state t and returns
+ the value of the expression for this behaviour. In the following, we will use
+ t_rho for the type of an expression. We also provide two constants head:Ts>Tt
+ and tail:Ts>Ts on state streams. As their name suggests, they represent
+ extraction of the first element and the suffix of a stream, but since we only
+ encode TLA expressions as lambda terms, there is no axiomatization of the two
+ functions.
 
-A constant expression disregards both arguments and always returns
- the same value i.e. it is a term λ_ λ_ c. Likewise, a variable ignores the
- next argument, i.e. it is λ_ v. Priming an expression exp evaluates it
- on (next t) i.e. the corresponding term is λnext λt (exp next (next t)).
+A constant expression disregards the complete behaviour and always returns
+ the same value i.e. it is a term λ_ λ_ c. Likewise, a variable is a function
+ from states to values which is independent of the follow-up states, i.e. it is
+ the term λ_ v. The difference to the term before is that c has type Ti
+ and v has type Tt > Ti. Priming an expression exp evaluates it on the stream
+ tail s and the current state head s i.e. the corresponding term is
+ λnext λt (exp (tail next) (head next)).
  Since only a constant operator can have arguments, an operator application
  evaluates the n arguments on next and t and applies those on the value level
  to c: the type of c is therefore Ti>...>Ti and the corresponding term is:
   λarg1...λargnλnext λt ((...(c (arg1 next t))... (argn next t)). The
- enabled operator introduces a new state and is similar to the HOL encoding
- of quantifiers. The difference is that it returns a TLA expression, no Boolean.
- This is caused by the untypedness of TLA. Enabled then corresponds to the term
-  λ_ λt EN λs (exp ( λ_ s) t) where EN is a (global) constant of type Tt>Ti. The
- deviation from the standard time-line is visible in the next operator which
- projects to the newly introduce state s. Formally, this next function is no
- behaviour in the sense of TLA since it is not an infinite sequence of different
- states. But a level-correct TLA expression does neither allow double priming
- nor temporal reasoning (i.e. [] and \AA) within ENABLED. Therefore, the en_next
- will never be evaluated on two different arguments.
-
+ enabled operator introduces a new followup behaviour and is similar to the HOL
+ encoding of quantifiers. The difference is that it returns a TLA expression,
+ no Boolean. This is caused by the untypedness of TLA. Enabled then corresponds
+ to the term  λ_ λt EN λs (exp s t) where EN is a (global) constant of type
+ Ts>Ti.
