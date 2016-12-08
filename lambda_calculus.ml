@@ -161,33 +161,40 @@ let pp_textype fmt =
     | To -> fprintf fmt "o"
     | Tt -> fprintf fmt "\\tau"
     | Arr(t1, t2) ->
-      let pp_ty = pp_type ~inside:true in
+      let pp_ty = pp_textype ~inside:true in
       match ins with
       | false  -> fprintf fmt "%a \\tya %a" pp_ty t1 pp_ty t2
-      | true -> fprintf fmt "(%a \tya %a)" pp_ty t1 pp_ty t2
+      | true -> fprintf fmt "(%a \\tya %a)" pp_ty t1 pp_ty t2
   in
   pp_textype fmt
 
 let pp_texterm fmt term =
+  let tex_of_builtin = function
+    | "[#]" -> "\\dif"
+    | "hd" -> "\\lchead"
+    | "tl" -> "\\lctail"
+    | "/\\" -> "\\land"
+    | str -> str
+  in
   let rec pp_term_ inside fmt t = match t.expr with
     | Const id
     | Var id ->
-      fprintf fmt "%s" (ID.name id)
+      fprintf fmt "%s" (ID.name id |> tex_of_builtin)
     | App (s,t) when inside ->
       let parens = not (is_app s.expr) in
-      fprintf fmt "(%a\\;  " (pp_term_ parens) s;
-      fprintf fmt "%a)" (pp_term_ true) t;
+      fprintf fmt "(\\app{%a}" (pp_term_ parens) s;
+      fprintf fmt "{%a})" (pp_term_ true) t;
     | App (s,t) (* not inside *) ->
       let parens = not (is_app s.expr) in
-      fprintf fmt "%a\\; " (pp_term_ parens) s;
-      fprintf fmt "%a" (pp_term_ true) t;
+      fprintf fmt "\\app{%a}" (pp_term_ parens) s;
+      fprintf fmt "{%a}" (pp_term_ true) t;
     | Abs (id,t) when inside ->
       let parens = not (is_abs t.expr) in
-      fprintf fmt "(\\lambda %s_{%a}\\; %a)" (ID.name id) pp_textype (ID.ty id)
+      fprintf fmt "(\\lam{%s_{%a}}{%a})" (ID.name id) pp_textype (ID.ty id)
         (pp_term_ parens) t
     | Abs (id,t) (* not inside *) ->
       let parens = not (is_abs t.expr) in
-      fprintf fmt "\\lambda %s_{%a}\\; %a" (ID.name id) pp_textype (ID.ty id)
+      fprintf fmt "\\lam{%s_{%a}}{%a}" (ID.name id) pp_textype (ID.ty id)
         (pp_term_ parens) t
     | Mu (id,t) ->
       fprintf fmt "@<1>\\mu %a %a" ID.pp id
@@ -325,7 +332,6 @@ let free =
       acc2
   in
   aux [] []
-    
 
 let unique_bound expr =
   let rec rename blacklist id others count =
@@ -549,10 +555,30 @@ module TLA = struct
       let s = var id in
       abs nid s
     | _  ->  failwith "A variable operator is of type Tt-->Ti."
-(*
+
+
+  let fpid name arity =
+    let rec tp acc = function
+      | 0 -> acc
+      | n when n > 0 ->
+        tp ( t_rho --> acc) (n-1)
+      | _ -> failwith "Arity must >= 0."
+    in
+    (ID.make name (tp t_rho arity))
+  
+  
   let fp_op id =
-    try ID.ty id with
-*)
+    let rec term_arity_ n = function
+      | t when is_trho t -> n
+      | Arr (t, x) when is_trho t -> term_arity_ (1+n) x
+      | _ -> -1
+    in
+    match term_arity_ 0 (ID.ty id) with
+    | n when n < 0 ->
+      let msg = asprintf "A formal parameter is of type Trho^n --> Trho!"  in
+      failwith msg
+    | _ -> var id
+
   let apply op args =
     match (op_arity op, List.length args) with
     | (n, m) when n = m ->
@@ -632,6 +658,7 @@ module TT = struct
   let one  = TLA.c_op one_id
   let plus = TLA.c_op plus_id
   let dif  = TLA.c_op dif_id
+  let conj = TLA.c_op conj_id
 
   let xid = TLA.vid "x"
   let x = TLA.v_op xid
@@ -644,6 +671,7 @@ module TT = struct
   let exp5 = TLA.apply dif [exp4; exp4] |> reduce
   let exp6 = TLA.enabled (TLA.apply plus [x_prime; exp3]) |> reduce |> unique_bound 
   let exp7 = TLA.enabled (TLA.apply dif [zero; TLA.prime zero])
+  let exp8 = TLA.enabled (TLA.apply conj [exp2; exp3])
 end
 
 let () =
