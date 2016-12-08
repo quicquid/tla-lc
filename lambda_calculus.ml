@@ -1,6 +1,6 @@
 open Format
 
-type tp = Tt | Ti | To | Arr of tp * tp
+type tp = Tt | Ts | Ti | To | Arr of tp * tp
 
 let pp_wrap condition pp_fmt fmt x=
   if condition then
@@ -9,9 +9,10 @@ let pp_wrap condition pp_fmt fmt x=
     fprintf fmt "%a" pp_fmt x
 
 let rec pp_type ?inside:(ins=false) fmt = function
-  | Ti -> fprintf fmt "i"
-  | To -> fprintf fmt "o"
-  | Tt -> fprintf fmt "t"
+  | Tt -> fprintf fmt "τ" (* states *)
+  | Ts -> fprintf fmt "δ" (* state streams *)
+  | Ti -> fprintf fmt "ι" (* values *)
+  | To -> fprintf fmt "ο" (* booleans *)
   | Arr(t1, t2) ->
     let pp_ty = pp_type ~inside:true in
     match ins with
@@ -155,6 +156,7 @@ let pp_ntterm fmt term =
 
 let pp_textype fmt =
   let rec pp_textype ?inside:(ins=false) fmt = function
+    | Ts -> fprintf fmt "\\sigma"
     | Ti -> fprintf fmt "\\iota"
     | To -> fprintf fmt "o"
     | Tt -> fprintf fmt "\\tau"
@@ -447,9 +449,8 @@ end
 module TLA = struct
   type quantifier = Forall | Exists
 
-  let t_next = Tt --> Tt
-  let t_rho = t_next --> (Tt --> Ti)
-  let c_enabled = const (ID.make "EN" ((Tt --> Ti) --> Ti))
+  let t_rho = Ts --> (Tt --> Ti)
+  let c_enabled = const (ID.make "EN" ((Ts --> Ti) --> Ti))
 
   (* quantifier represenatation: a quantifier takes the domain expression and
      the abstraction over the expression to return an expression *)
@@ -468,8 +469,11 @@ module TLA = struct
   let c_bforall_v = const (ID.make "B∀∀" t_vbquantifier )
   let c_bexists_v = const (ID.make "B∃∃" t_vbquantifier )
 
+  let head = const (ID.make "hd" (Ts --> Tt))
+  let tail = const (ID.make "tl" (Ts --> Ts))
+
   let is_trho = function
-    | Arr (Arr (Tt, Tt), Arr ( Tt, Ti)) -> true
+    | Arr (Ts, Arr ( Tt, Ti)) -> true
     | _ -> false
 
   let cid name arity =
@@ -520,7 +524,7 @@ module TLA = struct
       | _  ->  failwith "A constant operator is of type Tnext^n --> Tnext."
       in
       (* create ids and vars for time *)
-      let nid = (ID.make "n" (Tt --> Tt) ) in
+      let nid = (ID.make "n" Ts ) in
       let tid = (ID.make "t" Tt) in
       let next = var nid in
       let time = var tid in
@@ -541,7 +545,7 @@ module TLA = struct
   let v_op id =
     match ID.ty id with
     | Arr (Tt, Ti) ->
-      let nid = (ID.make "n" t_next ) in
+      let nid = (ID.make "n" Ts ) in
       let s = var id in
       abs nid s
     | _  ->  failwith "A variable operator is of type Tt-->Ti."
@@ -559,30 +563,27 @@ module TLA = struct
     match op_arity expr with
     | 0 ->
       (* prepare outer binders for enabled *)
-      let nid = (ID.make "n" (Tt --> Tt) ) in
+      let nid = (ID.make "n" Ts ) in
       let tid = (ID.make "t" Tt) in
       let next = var nid in
-      let t = var tid in
-      (* create t' as next of t *)
-      let t_prime = app next t in
       (* abstract over next and time and push the modified time inside *)
-      abs_l [nid; tid] (app_l expr [next; t_prime])
+      let prime_now = app head next in
+      let prime_later = app tail next in
+      abs_l [nid; tid] (app_l expr [prime_later; prime_now])
     | _ -> failwith "Can apply enabled only to expressions."
 
   let enabled expr =
     match op_arity expr with
     | 0 ->
       (* create id and var for the new state *)
-      let en_id = ID.make "e" Tt in
-      let v = var en_id in
-      (* create a new next state relation projecting to v *)
-      let next = abs (ID.make "dummy" Tt) v in
+      let en_id = ID.make "e" Ts in
+      let alt_stream = var en_id in
       (* prepare outer binders for enabled *)
-      let nid = (ID.make "n" (Tt --> Tt) ) in
+      let nid = (ID.make "n" Ts ) in
       let tid = (ID.make "t" Tt) in
       let t = var tid in
       (* evaluate expr with the new next and current time. *)
-      let enabled_term = app_l expr [next; t] in
+      let enabled_term = app_l expr [alt_stream; t] in
       (* bind the new state en_id and wrap the term into the enabled constant *)
       let enabled = app c_enabled (abs en_id enabled_term) in
       (* abstract over next and t *)
