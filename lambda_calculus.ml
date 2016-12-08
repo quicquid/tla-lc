@@ -621,6 +621,7 @@ end
 
 
 module TT = struct
+  let conj_id  = TLA.cid "/\\" 2
   let dif_id  = TLA.cid "[#]" 2
   let plus_id = TLA.cid "[+]" 2
   let zero_id = TLA.cid "[0]" 0
@@ -640,6 +641,8 @@ module TT = struct
   let exp3 = TLA.enabled exp2
   let exp4 = TLA.variable_quantifier TLA.Forall xid exp2
   let exp5 = TLA.apply dif [exp4; exp4] |> reduce
+  let exp6 = TLA.enabled (TLA.apply plus [x_prime; exp3]) |> reduce |> unique_bound 
+  let exp7 = TLA.enabled (TLA.apply dif [zero; TLA.prime zero])
 end
 
 let () =
@@ -647,8 +650,13 @@ let () =
     (fun (t1,t2,expect) ->
        let tostr b = if b then "EQ" else "NEQ" in
        let res = alpha_eq (reduce t1) (reduce t2) in
-       Format.printf "@[<v2>%s (expect %s)@ (@[%a@])@ (@[%a@])@]@."
-         (tostr res) (tostr expect) pp_term t1 pp_term t2)
+       if res != expect then
+         begin
+           Format.printf "@[<v2>%s (expect %s)@ (@[%a@])@ (@[%a@])@]@."
+             (tostr res) (tostr expect) pp_term t1 pp_term t2
+         end;
+       ()
+    )
     [ T.cycle1, T.cycle1, true;
       T.cycle2, T.cycle3, true;
       T.product_compute 2 2, T.cycle2, false;
